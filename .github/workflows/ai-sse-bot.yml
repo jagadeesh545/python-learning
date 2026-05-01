@@ -325,9 +325,9 @@ jobs:
             echo "  File size: $FILE_SIZE bytes"
             
             REVIEW=$(cat /tmp/review_output.md)
-            echo "  Content preview (first 500 chars):"
+            echo "  Content preview:"
             echo "  ---"
-            echo "$REVIEW" | head -c 500
+            echo "$REVIEW"
             echo ""
             echo "  ---"
             
