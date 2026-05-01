@@ -47,6 +47,18 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Install Ollama
+        run: |
+          # Install Ollama
+          curl -fsSL https://ollama.ai/install.sh | sh
+          
+          # Start Ollama service
+          ollama serve &
+          sleep 10
+          
+          # Pull a lightweight model (Mistral is ~4GB, but Deepseek-coder is smaller)
+          ollama pull mistral
+
       - name: Run Copilot Code Review
         id: review
         env:
@@ -54,21 +66,15 @@ jobs:
           REVIEW_PROMPT: ${{ steps.prompt.outputs.review_prompt }}
         run: |
           # Install required packages
-          pip install PyGithub requests anthropic -q
+          pip install PyGithub requests -q
           
           # Create Python script for Copilot review
           cat > /tmp/copilot_review.py << 'PYTHON_SCRIPT'
           import os
           import json
+          import requests
           from datetime import datetime
           from pathlib import Path
-          
-          # Try to use Anthropic Claude API or GitHub Copilot API
-          try:
-              from anthropic import Anthropic
-              USE_ANTHROPIC = True
-          except ImportError:
-              USE_ANTHROPIC = False
           
           def get_code_files():
               """Get all code files for review"""
@@ -95,47 +101,57 @@ jobs:
               except:
                   return None
           
-          def review_with_ai(files_content, prompt):
-              """Send code for review to AI"""
+          def review_with_ollama(files_content, prompt):
+              """Send code for review to Ollama local model"""
               review_content = "## Code Review Analysis\n\n"
               review_content += f"**Review Prompt:** {prompt}\n\n"
-              review_content += f"**Generated:** {datetime.now().isoformat()}\n\n"
+              review_content += f"**Generated:** {datetime.now().isoformat()}\n"
+              review_content += f"**Model:** Mistral (Local - Free)\n\n"
               
-              if USE_ANTHROPIC and os.environ.get('ANTHROPIC_API_KEY'):
-                  try:
-                      client = Anthropic()
-                      message = client.messages.create(
-                          model="claude-3-5-sonnet-20241022",
-                          max_tokens=2048,
-                          messages=[
-                              {
-                                  "role": "user",
-                                  "content": f"{prompt}\n\nCode to review:\n\n{files_content}"
-                              }
-                          ]
-                      )
-                      review_content += "### AI Review Results:\n"
-                      review_content += message.content[0].text
+              try:
+                  # Call Ollama API locally
+                  response = requests.post(
+                      'http://localhost:11434/api/generate',
+                      json={
+                          'model': 'mistral',
+                          'prompt': f"{prompt}\n\nCode to review:\n\n{files_content[:3000]}",  # Limit token size
+                          'stream': False,
+                          'temperature': 0.3
+                      },
+                      timeout=120
+                  )
+                  
+                  if response.status_code == 200:
+                      result = response.json()
+                      review_content += "### AI Review Results (Ollama/Mistral):\n"
+                      review_content += result.get('response', 'No response generated')
                       review_content += "\n\n"
-                  except Exception as e:
-                      review_content += f"⚠ AI Review Error: {str(e)}\n\n"
-              else:
-                  # Fallback: provide structured review template
-                  review_content += "### Code Review Summary:\n"
-                  review_content += f"Total files analyzed: {len(files_content.split(chr(10)))}\n\n"
-                  review_content += "### Key Areas Reviewed:\n"
-                  review_content += "- **Security**: Check for common vulnerabilities\n"
-                  review_content += "- **Performance**: Look for optimization opportunities\n"
-                  review_content += "- **Best Practices**: Verify coding standards and patterns\n"
-                  review_content += "- **Code Quality**: Assess readability and maintainability\n\n"
-                  review_content += "### Recommendations:\n"
-                  review_content += "- Consider using type hints for better code clarity\n"
-                  review_content += "- Ensure all functions have docstrings\n"
-                  review_content += "- Review security dependencies for vulnerabilities\n"
-                  review_content += "- Consider adding unit tests for critical functions\n"
-                  review_content += "- Follow PEP 8 guidelines for Python code\n"
+                  else:
+                      review_content += f"⚠ Ollama Error: {response.status_code}\n\n"
+                      
+              except requests.exceptions.ConnectionError:
+                  review_content += "⚠ Could not connect to Ollama service. Using fallback review.\n\n"
+                  review_content += _fallback_review()
+              except Exception as e:
+                  review_content += f"⚠ Review Error: {str(e)}\n\n"
+                  review_content += _fallback_review()
               
               return review_content
+          
+          def _fallback_review():
+              """Fallback structured review"""
+              content = "### Code Review Summary (Fallback):\n"
+              content += "- **Security**: Check for common vulnerabilities\n"
+              content += "- **Performance**: Look for optimization opportunities\n"
+              content += "- **Best Practices**: Verify coding standards and patterns\n"
+              content += "- **Code Quality**: Assess readability and maintainability\n\n"
+              content += "### Recommendations:\n"
+              content += "- Consider using type hints for better code clarity\n"
+              content += "- Ensure all functions have docstrings\n"
+              content += "- Review security dependencies for vulnerabilities\n"
+              content += "- Consider adding unit tests for critical functions\n"
+              content += "- Follow PEP 8 guidelines for Python code\n"
+              return content
           
           # Get files and content
           files = get_code_files()
@@ -144,7 +160,8 @@ jobs:
           if files:
               review_content = "## Code Review Analysis\n\n"
               review_content += f"**Review Prompt:** {os.environ.get('REVIEW_PROMPT', 'N/A')}\n\n"
-              review_content += f"**Generated:** {datetime.now().isoformat()}\n\n"
+              review_content += f"**Generated:** {datetime.now().isoformat()}\n"
+              review_content += f"**Using:** Ollama Mistral (Free, Local)\n\n"
               review_content += f"### Files Under Review: ({len(files)} files)\n\n"
               
               files_content = ""
@@ -159,7 +176,7 @@ jobs:
               review_content += "\n"
               
               # Get AI review
-              ai_review = review_with_ai(files_content, os.environ.get('REVIEW_PROMPT', 'Review this code for security issues, performance improvements, and best practices.'))
+              ai_review = review_with_ollama(files_content, os.environ.get('REVIEW_PROMPT', 'Review this code for security issues, performance improvements, and best practices.'))
               review_content += ai_review
           else:
               review_content = "## Code Review\n\nNo code files found for review."
