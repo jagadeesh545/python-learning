@@ -146,5 +146,7 @@ jobs:
           body: ${{ steps.review_output.outputs.review_body }}
           branch: copilot-review-${{ github.run_number }}
           delete-branch: true
-          labels: 'code-review', 'automated'
+          labels: |
+            code-review
+            automated
           assignees: ${{ github.repository_owner }}
