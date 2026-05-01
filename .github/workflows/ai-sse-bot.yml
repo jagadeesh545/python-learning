@@ -77,24 +77,34 @@ jobs:
           echo "✓ Ollama installed"
           
           echo "🚀 Starting Ollama service..."
-          ollama serve &
+          ollama serve > /tmp/ollama.log 2>&1 &
           OLLAMA_PID=$!
           echo "Ollama PID: $OLLAMA_PID"
           
-          echo "⏳ Waiting 10 seconds for Ollama to start..."
-          sleep 10
+          echo "⏳ Waiting 15 seconds for Ollama to start..."
+          sleep 15
           
           echo "📦 Pulling Mistral model (this may take a few minutes)..."
-          if ollama pull mistral; then
+          if timeout 600 ollama pull mistral; then
             echo "✓ Mistral model pulled successfully"
           else
-            echo "❌ Failed to pull Mistral model"
+            echo "❌ Failed to pull Mistral model or timeout"
+            cat /tmp/ollama.log
             exit 1
           fi
           
           echo "✓ Ollama ready"
+          echo "Waiting 10 more seconds for model to be ready..."
+          sleep 10
+          
           echo "Testing Ollama API..."
-          curl -s http://localhost:11434/api/tags | head -20 || echo "⚠️  Ollama API test failed"
+          if curl -s --max-time 30 http://localhost:11434/api/tags; then
+            echo ""
+            echo "✓ Ollama API is responding"
+          else
+            echo "⚠️  Ollama API test failed, but continuing..."
+            cat /tmp/ollama.log | tail -20
+          fi
 
       - name: Run Copilot Code Review
         id: review
@@ -117,6 +127,7 @@ jobs:
           import json
           import requests
           import sys
+          import time
           from datetime import datetime
           from pathlib import Path
           
@@ -156,6 +167,29 @@ jobs:
                   print(f"  ⚠️  Could not read {filepath}: {e}")
                   return None
           
+          def test_ollama_connection(max_retries=5):
+              """Test Ollama connection with retries"""
+              print("\n🔗 Testing Ollama connection...")
+              for attempt in range(max_retries):
+                  try:
+                      print(f"  Attempt {attempt + 1}/{max_retries}...")
+                      response = requests.get(
+                          'http://localhost:11434/api/tags',
+                          timeout=30
+                      )
+                      if response.status_code == 200:
+                          print("  ✓ Ollama is responding")
+                          return True
+                  except Exception as e:
+                      print(f"  ⚠️  Connection attempt {attempt + 1} failed: {e}")
+                      if attempt < max_retries - 1:
+                          wait_time = 5 * (attempt + 1)
+                          print(f"  ⏳ Waiting {wait_time} seconds before retry...")
+                          time.sleep(wait_time)
+              
+              print("  ❌ Could not connect to Ollama after multiple attempts")
+              return False
+          
           def review_with_ollama(files_content, prompt):
               """Send code for review to Ollama local model"""
               print("\n🤖 Starting Ollama review...")
@@ -165,38 +199,55 @@ jobs:
               review_content += f"**Model:** Mistral (Local - Free)\n\n"
               
               try:
-                  print("  Testing connection to Ollama API at http://localhost:11434...")
-                  # Call Ollama API locally
+                  # Test connection first
+                  if not test_ollama_connection():
+                      print("  ℹ️  Ollama unavailable, using fallback review")
+                      return review_content + _fallback_review()
+                  
+                  print("  📤 Sending code to Ollama for review...")
+                  print("  (This may take 30-60 seconds for the first request)")
+                  
+                  # Prepare the review request with extended timeout
+                  review_prompt = f"{prompt}\n\nCode to review:\n\n{files_content[:2000]}"
+                  
                   response = requests.post(
                       'http://localhost:11434/api/generate',
                       json={
                           'model': 'mistral',
-                          'prompt': f"{prompt}\n\nCode to review:\n\n{files_content[:3000]}",  # Limit token size
+                          'prompt': review_prompt,
                           'stream': False,
-                          'temperature': 0.3
+                          'temperature': 0.3,
                       },
-                      timeout=120
+                      timeout=300  # 5 minute timeout
                   )
                   
-                  print(f"  Ollama response status: {response.status_code}")
+                  print(f"  Response status: {response.status_code}")
                   
                   if response.status_code == 200:
                       result = response.json()
-                      print("  ✓ Review generated successfully")
-                      review_content += "### AI Review Results (Ollama/Mistral):\n"
-                      review_content += result.get('response', 'No response generated')
-                      review_content += "\n\n"
+                      if 'response' in result:
+                          print("  ✓ Review generated successfully")
+                          review_content += "### AI Review Results (Ollama/Mistral):\n"
+                          review_content += result.get('response', 'No response generated')
+                          review_content += "\n\n"
+                      else:
+                          print("  ⚠️  No response in result")
+                          review_content += _fallback_review()
                   else:
-                      print(f"  ❌ Ollama error: {response.status_code}")
-                      review_content += f"⚠ Ollama Error: {response.status_code}\n\n"
+                      print(f"  ❌ Ollama returned status {response.status_code}")
+                      print(f"  Response: {response.text[:200]}")
                       review_content += _fallback_review()
                       
+              except requests.exceptions.Timeout:
+                  print(f"  ❌ Request timed out (Ollama may still be processing the model)")
+                  review_content += "⚠ Ollama request timed out. The model may need more time to initialize.\n\n"
+                  review_content += _fallback_review()
               except requests.exceptions.ConnectionError as e:
                   print(f"  ❌ Connection error: {e}")
-                  review_content += "⚠ Could not connect to Ollama service. Using fallback review.\n\n"
+                  review_content += "⚠ Could not connect to Ollama service.\n\n"
                   review_content += _fallback_review()
               except Exception as e:
-                  print(f"  ❌ Error: {e}")
+                  print(f"  ❌ Error: {type(e).__name__}: {e}")
                   review_content += f"⚠ Review Error: {str(e)}\n\n"
                   review_content += _fallback_review()
               
@@ -205,7 +256,7 @@ jobs:
           def _fallback_review():
               """Fallback structured review"""
               print("  ℹ️  Using fallback review template")
-              content = "### Code Review Summary (Fallback):\n"
+              content = "### Code Review Summary (Template):\n"
               content += "- **Security**: Check for common vulnerabilities\n"
               content += "- **Performance**: Look for optimization opportunities\n"
               content += "- **Best Practices**: Verify coding standards and patterns\n"
