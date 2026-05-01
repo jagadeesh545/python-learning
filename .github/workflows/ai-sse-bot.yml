@@ -24,18 +24,35 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      
+      - name: Log checkout info
+        run: |
+          echo "📂 Checkout complete"
+          echo "Current directory: $(pwd)"
+          echo "Files in current directory:"
+          ls -la
+          echo "Git status:"
+          git status
+          echo "Git branch: $(git rev-parse --abbrev-ref HEAD)"
 
       - name: Load review prompt
         id: prompt
         run: |
+          echo "⚙️  Loading review prompt..."
+          
           # Check if custom prompt file exists
           if [ -f ".github/copilot-review-prompt.md" ]; then
+            echo "✓ Custom prompt file found"
             PROMPT=$(cat .github/copilot-review-prompt.md)
           elif [ ! -z "${{ github.event.inputs.review_prompt }}" ]; then
+            echo "✓ Custom prompt from workflow input"
             PROMPT="${{ github.event.inputs.review_prompt }}"
           else
+            echo "✓ Using default prompt"
             PROMPT="Review this code for security issues, performance improvements, and best practices."
           fi
+          
+          echo "Prompt loaded (length: ${#PROMPT} chars)"
           
           # Store prompt as environment variable (handle multiline)
           echo "review_prompt<<EOF" >> $GITHUB_OUTPUT
@@ -46,18 +63,38 @@ jobs:
         uses: actions/setup-python@v4
         with:
           python-version: '3.11'
+      
+      - name: Log Python setup
+        run: |
+          echo "🐍 Python setup complete"
+          echo "Python version: $(python --version)"
+          echo "pip version: $(pip --version)"
 
       - name: Install Ollama
         run: |
-          # Install Ollama
+          echo "📥 Installing Ollama..."
           curl -fsSL https://ollama.ai/install.sh | sh
+          echo "✓ Ollama installed"
           
-          # Start Ollama service
+          echo "🚀 Starting Ollama service..."
           ollama serve &
+          OLLAMA_PID=$!
+          echo "Ollama PID: $OLLAMA_PID"
+          
+          echo "⏳ Waiting 10 seconds for Ollama to start..."
           sleep 10
           
-          # Pull a lightweight model (Mistral is ~4GB, but Deepseek-coder is smaller)
-          ollama pull mistral
+          echo "📦 Pulling Mistral model (this may take a few minutes)..."
+          if ollama pull mistral; then
+            echo "✓ Mistral model pulled successfully"
+          else
+            echo "❌ Failed to pull Mistral model"
+            exit 1
+          fi
+          
+          echo "✓ Ollama ready"
+          echo "Testing Ollama API..."
+          curl -s http://localhost:11434/api/tags | head -20 || echo "⚠️  Ollama API test failed"
 
       - name: Run Copilot Code Review
         id: review
@@ -65,32 +102,49 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REVIEW_PROMPT: ${{ steps.prompt.outputs.review_prompt }}
         run: |
+          echo "🔍 Starting code review process..."
+          echo "Environment: GITHUB_TOKEN=$([ -n "$GITHUB_TOKEN" ] && echo 'SET' || echo 'NOT SET')"
+          echo "Review prompt length: ${#REVIEW_PROMPT} chars"
+          
           # Install required packages
+          echo "📦 Installing Python packages..."
           pip install PyGithub requests -q
+          echo "✓ Packages installed"
           
           # Create Python script for Copilot review
           cat > /tmp/copilot_review.py << 'PYTHON_SCRIPT'
           import os
           import json
           import requests
+          import sys
           from datetime import datetime
           from pathlib import Path
           
+          print("=" * 60)
+          print("CODE REVIEW SCRIPT STARTED")
+          print("=" * 60)
+          
           def get_code_files():
               """Get all code files for review"""
+              print("\n📂 Scanning for code files...")
               code_extensions = {'.py', '.js', '.jsx', '.ts', '.tsx', '.java', '.go', '.rb', '.php', '.cs', '.cpp', '.c', '.h', '.html', '.css', '.json', '.yaml', '.yml', '.sh', '.sql'}
               code_files = []
+              skip_dirs = {'.git', '__pycache__', '.github', 'node_modules', '.venv', 'venv', '.env', 'dist', 'build', '.pytest_cache', '.mypy_cache'}
               
               for root, dirs, files in os.walk('.'):
                   # Skip common directories
-                  dirs[:] = [d for d in dirs if d not in ['.git', '__pycache__', '.github', 'node_modules', '.venv', 'venv', '.env', 'dist', 'build', '.pytest_cache', '.mypy_cache']]
+                  dirs[:] = [d for d in dirs if d not in skip_dirs]
                   
                   for file in files:
                       if Path(file).suffix.lower() in code_extensions:
                           filepath = os.path.join(root, file)
                           code_files.append(filepath)
               
-              return code_files[:20]  # Limit to 20 files for review
+              code_files = code_files[:20]  # Limit to 20 files for review
+              print(f"✓ Found {len(code_files)} code files")
+              for f in code_files:
+                  print(f"  - {f}")
+              return code_files
           
           def read_file_content(filepath, max_lines=100):
               """Read file content with line limit"""
@@ -98,17 +152,20 @@ jobs:
                   with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
                       lines = f.readlines()[:max_lines]
                       return ''.join(lines)
-              except:
+              except Exception as e:
+                  print(f"  ⚠️  Could not read {filepath}: {e}")
                   return None
           
           def review_with_ollama(files_content, prompt):
               """Send code for review to Ollama local model"""
+              print("\n🤖 Starting Ollama review...")
               review_content = "## Code Review Analysis\n\n"
               review_content += f"**Review Prompt:** {prompt}\n\n"
               review_content += f"**Generated:** {datetime.now().isoformat()}\n"
               review_content += f"**Model:** Mistral (Local - Free)\n\n"
               
               try:
+                  print("  Testing connection to Ollama API at http://localhost:11434...")
                   # Call Ollama API locally
                   response = requests.post(
                       'http://localhost:11434/api/generate',
@@ -121,18 +178,25 @@ jobs:
                       timeout=120
                   )
                   
+                  print(f"  Ollama response status: {response.status_code}")
+                  
                   if response.status_code == 200:
                       result = response.json()
+                      print("  ✓ Review generated successfully")
                       review_content += "### AI Review Results (Ollama/Mistral):\n"
                       review_content += result.get('response', 'No response generated')
                       review_content += "\n\n"
                   else:
+                      print(f"  ❌ Ollama error: {response.status_code}")
                       review_content += f"⚠ Ollama Error: {response.status_code}\n\n"
+                      review_content += _fallback_review()
                       
-              except requests.exceptions.ConnectionError:
+              except requests.exceptions.ConnectionError as e:
+                  print(f"  ❌ Connection error: {e}")
                   review_content += "⚠ Could not connect to Ollama service. Using fallback review.\n\n"
                   review_content += _fallback_review()
               except Exception as e:
+                  print(f"  ❌ Error: {e}")
                   review_content += f"⚠ Review Error: {str(e)}\n\n"
                   review_content += _fallback_review()
               
@@ -140,6 +204,7 @@ jobs:
           
           def _fallback_review():
               """Fallback structured review"""
+              print("  ℹ️  Using fallback review template")
               content = "### Code Review Summary (Fallback):\n"
               content += "- **Security**: Check for common vulnerabilities\n"
               content += "- **Performance**: Look for optimization opportunities\n"
@@ -158,6 +223,7 @@ jobs:
           review_content = ""
           
           if files:
+              print(f"\n📄 Processing {len(files)} files...")
               review_content = "## Code Review Analysis\n\n"
               review_content += f"**Review Prompt:** {os.environ.get('REVIEW_PROMPT', 'N/A')}\n\n"
               review_content += f"**Generated:** {datetime.now().isoformat()}\n"
@@ -179,26 +245,48 @@ jobs:
               ai_review = review_with_ollama(files_content, os.environ.get('REVIEW_PROMPT', 'Review this code for security issues, performance improvements, and best practices.'))
               review_content += ai_review
           else:
+              print("\n⚠️  No code files found!")
               review_content = "## Code Review\n\nNo code files found for review."
           
           # Save review output
+          print(f"\n💾 Saving review to /tmp/review_output.md ({len(review_content)} chars)...")
           with open('/tmp/review_output.md', 'w') as f:
               f.write(review_content)
+          print("✓ Review saved successfully")
           
-          print("Code review completed successfully")
+          print("\n" + "=" * 60)
+          print("CODE REVIEW SCRIPT COMPLETED")
+          print("=" * 60)
           PYTHON_SCRIPT
           
+          echo "▶️  Executing Python review script..."
           python /tmp/copilot_review.py
+          echo "✓ Python script completed"
 
       - name: Read review output
         id: review_output
         run: |
+          echo "📖 Reading review output..."
+          
           if [ -f /tmp/review_output.md ]; then
+            echo "✓ Review file found"
+            FILE_SIZE=$(wc -c < /tmp/review_output.md)
+            echo "  File size: $FILE_SIZE bytes"
+            
             REVIEW=$(cat /tmp/review_output.md)
+            echo "  Content preview (first 500 chars):"
+            echo "  ---"
+            echo "$REVIEW" | head -c 500
+            echo ""
+            echo "  ---"
+            
             echo "review_body<<EOF" >> $GITHUB_OUTPUT
             echo "$REVIEW" >> $GITHUB_OUTPUT
             echo "EOF" >> $GITHUB_OUTPUT
+            
+            echo "✓ Review output stored in GITHUB_OUTPUT"
           else
+            echo "❌ Review file not found!"
             echo "review_body=Code review completed." >> $GITHUB_OUTPUT
           fi
 
@@ -214,3 +302,10 @@ jobs:
             code-review
             automated
           assignees: ${{ github.repository_owner }}
+      
+      - name: Log PR creation
+        if: always()
+        run: |
+          echo "✅ Workflow completed!"
+          echo "Check the Actions tab for details"
+          echo "If PR was not created, review the logs above for errors"
