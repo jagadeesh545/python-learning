@@ -64,17 +64,17 @@ jobs:
           
           # Get repository files for review
           def get_python_files():
-              python_files = []
+              code_files = []
               for root, dirs, files in os.walk('.'):
                   # Skip common directories
                   dirs[:] = [d for d in dirs if d not in ['.git', '__pycache__', '.github', 'node_modules', '.venv', 'venv']]
                   
                   for file in files:
-                      if file.endswith('.py'):
+                      if file.endswith('.jsx') or file.endswith('.js') or file.endswith('.html') or file.endswith('.css') or file.endswith('.json') or file.endswith('.md'):
                           filepath = os.path.join(root, file)
-                          python_files.append(filepath)
+                          code_files.append(filepath)
               
-              return python_files[:10]  # Limit to first 10 files for review
+              return code_files
           
           # Format files for review
           files = get_python_files()
