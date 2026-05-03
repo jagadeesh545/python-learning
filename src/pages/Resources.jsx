@@ -1,10 +1,32 @@
 import { courseData } from '../data'
 import TopicIcon from '../components/TopicIcon'
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import ReactMarkdown from 'react-markdown'
+
+// Assuming Vite as your bundler, you can import files as raw strings using '?raw'
+import envIntro from '../../articles/environment-management-intro.md?raw'
+import reqGuide from '../../articles/requirements-txt-guide.md?raw'
+import poetryGuide from '../../articles/poetry-guide.md?raw'
+import uvGuide from '../../articles/uv-guide.md?raw'
 
 export default function Resources({ expandedPhases, setExpandedPhases, expandedTopics, setExpandedTopics, darkMode, selectedTopicId, setSelectedTopicId }) {
   const phases = courseData.roadmap.phases
   const topicRefs = useRef({})
+  const [activeArticle, setActiveArticle] = useState(null)
+
+  const articleContent = {
+    'env-intro': envIntro,
+    'req-guide': reqGuide,
+    'poetry-guide': poetryGuide,
+    'uv-guide': uvGuide,
+  }
+
+  // Safely extract the raw string and provide a fallback if the file is empty
+  const getMarkdownContent = (key) => {
+    const rawContent = articleContent[key]
+    const text = typeof rawContent === 'string' ? rawContent : (rawContent?.default || '')
+    return text.trim() ? text : '⚠️ *Article content is empty or failed to load. Try restarting your Vite server.*'
+  }
 
   useEffect(() => {
     if (selectedTopicId && topicRefs.current[selectedTopicId]) {
@@ -36,6 +58,52 @@ export default function Resources({ expandedPhases, setExpandedPhases, expandedT
   return (
     <div className="space-y-6">
       <h2 className="text-3xl font-bold">Resources</h2>
+
+      {/* Markdown Article Modal */}
+      {activeArticle && (
+        <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center p-4 z-50">
+          <div className={`relative w-full max-w-4xl min-h-[50vh] max-h-[90vh] overflow-y-auto rounded-lg p-8 shadow-xl ${darkMode ? 'bg-gray-800 text-gray-200' : 'bg-white text-gray-800'}`}>
+            <button
+              onClick={() => setActiveArticle(null)}
+              className={`absolute top-4 right-4 text-3xl leading-none font-bold ${darkMode ? 'text-gray-400 hover:text-white' : 'text-gray-500 hover:text-black'}`}
+            >
+              &times;
+            </button>
+            <div className="space-y-4">
+              <ReactMarkdown
+                components={{
+                  h1: ({node, ...props}) => <h1 className="text-3xl font-bold mb-6" {...props} />,
+                  h2: ({node, ...props}) => <h2 className="text-2xl font-bold mt-8 mb-4 border-b pb-2" {...props} />,
+                  h3: ({node, ...props}) => <h3 className="text-xl font-semibold mt-6 mb-3" {...props} />,
+                  p: ({node, ...props}) => <p className="mb-4 leading-relaxed" {...props} />,
+                  ul: ({node, ...props}) => <ul className="list-disc list-outside ml-6 mb-4 space-y-2" {...props} />,
+                  ol: ({node, ...props}) => <ol className="list-decimal list-outside ml-6 mb-4 space-y-2" {...props} />,
+                  li: ({node, ...props}) => <li {...props} />,
+                  a: ({node, ...props}) => <a className="text-blue-500 hover:underline" target="_blank" rel="noreferrer" {...props} />,
+                  code(props) {
+                    const {children, className, node, ...rest} = props
+                    const match = /language-(\w+)/.exec(className || '')
+                    return match ? (
+                      <pre className={`p-4 my-4 rounded-lg overflow-x-auto ${darkMode ? 'bg-gray-900 text-gray-300' : 'bg-gray-100 text-gray-800'}`}>
+                        <code className={className} {...rest}>
+                          {children}
+                        </code>
+                      </pre>
+                    ) : (
+                      <code className={`px-1.5 py-0.5 rounded text-sm font-mono ${darkMode ? 'bg-gray-700 text-blue-300' : 'bg-gray-200 text-blue-600'}`} {...rest}>
+                        {children}
+                      </code>
+                    )
+                  }
+                }}
+              >
+                {getMarkdownContent(activeArticle)}
+              </ReactMarkdown>
+            </div>
+          </div>
+        </div>
+      )}
+
       {phases.map((phase) => (
         <div
           key={phase.id}
@@ -97,6 +165,41 @@ export default function Resources({ expandedPhases, setExpandedPhases, expandedT
                                 </a>
                               </li>
                             </ul>
+                          ) : type === 'Articles' && topic.id === 'packaging' ? (
+                            <ul className="list-disc list-inside text-sm space-y-1">
+                              <li>
+                                <button
+                                  onClick={() => setActiveArticle('env-intro')}
+                                  className={`hover:underline text-left ${darkMode ? 'text-blue-400' : 'text-blue-600'}`}
+                                >
+                                  Introduction to Python Environment Management
+                                </button>
+                              </li>
+                              <li>
+                                <button
+                                  onClick={() => setActiveArticle('req-guide')}
+                                  className={`hover:underline text-left ${darkMode ? 'text-blue-400' : 'text-blue-600'}`}
+                                >
+                                  Managing Dependencies with requirements.txt
+                                </button>
+                              </li>
+                              <li>
+                                <button
+                                  onClick={() => setActiveArticle('poetry-guide')}
+                                  className={`hover:underline text-left ${darkMode ? 'text-blue-400' : 'text-blue-600'}`}
+                                >
+                                  Modern Python Packaging with Poetry
+                                </button>
+                              </li>
+                              <li>
+                                <button
+                                  onClick={() => setActiveArticle('uv-guide')}
+                                  className={`hover:underline text-left ${darkMode ? 'text-blue-400' : 'text-blue-600'}`}
+                                >
+                                  Ultra-fast Python with uv
+                                </button>
+                              </li>
+                            </ul>
                           ) : (
                             <p className={`text-sm italic ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>TBD</p>
                           )}
@@ -113,4 +216,3 @@ export default function Resources({ expandedPhases, setExpandedPhases, expandedT
     </div>
   )
 }
-

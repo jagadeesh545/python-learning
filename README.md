@@ -8,7 +8,7 @@ A modern, interactive learning platform for Python backend engineering and micro
 
 ### Installation
 ```bash
-git clone https://github.com/yourusername/python-learning.git
+git clone https://github.com/jagadeesh545/python-learning.git
 cd python-learning
 npm install
 ```
